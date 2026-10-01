@@ -7,6 +7,7 @@ from scipy.stats import poisson
 from telegram import Update
 from telegram.ext import ApplicationBuilder
 
+
 # --- SERVIDOR FLASK PARA O RENDER ---
 flask_app = Flask(__name__)
 
