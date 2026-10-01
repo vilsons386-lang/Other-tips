@@ -1,4 +1,4 @@
-import logging
+import loggingr
 import os
 from threading import Thread
 from flask import Flask
