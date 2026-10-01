@@ -19,166 +19,175 @@ ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
 flask_app = Flask(__name__)
 
+
 @flask_app.route("/")
 def home():
-    return "Bot +EV Sem Falhar está Online!"
+    return "Bot de Jogos do Dia está Online!"
+
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
+
 def calcular_ev(probabilidade_fair, odd_oferecida):
+    """Calcula o Valor Esperado (+EV) em percentagem."""
     ev = (probabilidade_fair * odd_oferecida) - 1
     return round(ev * 100, 2)
 
+
+# --- COMANDOS DO TELEGRAM ---
 async def start(update: Update, context):
     await update.message.reply_text(
-        "👋 Envie /analisar para ver os melhores jogos e apostas +EV das próximas 48 horas!"
+        "👋 Olá! Envie /analisar para ver a lista dos próximos jogos (hoje e amanhã)."
     )
 
+
 async def analisar(update: Update, context):
-    await update.message.reply_text("🔍 A obter todos os jogos das próximas 48h...")
+    await update.message.reply_text(
+        "🔍 A procurar todos os jogos para as próximas 24-30 horas..."
+    )
 
     try:
         if not ODDS_API_KEY:
-            await update.message.reply_text("❌ Erro: ODDS_API_KEY não configurada.")
+            await update.message.reply_text(
+                "❌ Erro: ODDS_API_KEY não configurada no Render."
+            )
             return
 
         now_utc = datetime.now(timezone.utc)
-        limite_tempo = now_utc + timedelta(hours=48)
+        # Limite de tempo reduzido para apanhar APENAS jogos de HOJE/AMANHÃ (máx 30h)
+        limite_tempo = now_utc + timedelta(hours=30)
 
-        # 1. Obter primeiro a lista de desportos/ligas com jogos ativos
-        sports_url = f"https://api.the-odds-api.com/v4/sports/?apiKey={ODDS_API_KEY}"
-        res_sports = requests.get(sports_url, timeout=10)
+        # Procura jogos nas ligas disponíveis
+        url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
         
-        ligas_futebol = []
-        if res_sports.status_code == 200:
-            for s in res_sports.json():
-                if s.get("group") == "Soccer":
-                    ligas_futebol.append(s.get("key"))
+        # Se a rota genérica falhar, tenta ligas específicas
+        res = requests.get(url, timeout=10)
+        dados = []
 
-        # Fallback se não conseguir a lista de ligas
-        if not ligas_futebol:
-            ligas_futebol = ["soccer_epl", "soccer_spain_la_liga", "soccer_portugal_primeira_liga", "soccer_italy_serie_a"]
-
-        oportunidades = []
-        jogos_gerais = []
-
-        # Analisa até 8 ligas ativas
-        for liga in ligas_futebol[:8]:
-            url = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
-            res = requests.get(url, timeout=8)
-
-            if res.status_code != 200:
-                continue
-
+        if res.status_code == 200:
             dados = res.json()
-            if not dados:
+        else:
+            # Fallback para Premier League e Liga Portugal
+            for liga in ["soccer_epl", "soccer_portugal_primeira_liga", "soccer_spain_la_liga"]:
+                u = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
+                r = requests.get(u, timeout=8)
+                if r.status_code == 200 and r.json():
+                    dados.extend(r.json())
+
+        if not dados:
+            await update.message.reply_text("⚠️ Nenhum jogo encontrado no momento.")
+            return
+
+        lista_jogos = []
+
+        for jogo in dados:
+            commence_time_str = jogo.get("commence_time")
+            if commence_time_str:
+                jogo_time = datetime.fromisoformat(
+                    commence_time_str.replace("Z", "+00:00")
+                )
+                # Filtra apenas o que acontece HOJE/AMANHÃ cedo
+                if jogo_time < now_utc or jogo_time > limite_tempo:
+                    continue
+            else:
                 continue
 
-            for jogo in dados:
-                commence_time_str = jogo.get("commence_time")
-                if commence_time_str:
-                    jogo_time = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
-                    if jogo_time < now_utc or jogo_time > limite_tempo:
-                        continue
-                else:
-                    continue
+            home = jogo.get("home_team", "Casa")
+            away = jogo.get("away_team", "Fora")
+            bookmakers = jogo.get("bookmakers", [])
 
-                home = jogo.get("home_team", "Casa")
-                away = jogo.get("away_team", "Fora")
-                bookmakers = jogo.get("bookmakers", [])
-                if not bookmakers:
-                    continue
+            if not bookmakers:
+                continue
 
-                hora_jogo = jogo_time.strftime("%d/%m %H:%M")
+            hora_jogo = jogo_time.strftime("%d/%m %H:%M")
 
-                # Cálculo de odds médias
-                odds_casa, odds_fora, odds_empate = [], [], []
-                for bk in bookmakers:
-                    for mk in bk.get("markets", []):
-                        if mk.get("key") == "h2h":
-                            for out in mk.get("outcomes", []):
-                                if out["name"] == home:
-                                    odds_casa.append(out["price"])
-                                elif out["name"] == away:
-                                    odds_fora.append(out["price"])
-                                else:
-                                    odds_empate.append(out["price"])
+            # Média das odds
+            odds_casa, odds_fora, odds_empate = [], [], []
+            for bk in bookmakers:
+                for mk in bk.get("markets", []):
+                    if mk.get("key") == "h2h":
+                        for out in mk.get("outcomes", []):
+                            if out["name"] == home:
+                                odds_casa.append(out["price"])
+                            elif out["name"] == away:
+                                odds_fora.append(out["price"])
+                            else:
+                                odds_empate.append(out["price"])
 
-                if odds_casa and odds_fora and odds_empate:
-                    avg_c = sum(odds_casa) / len(odds_casa)
-                    avg_f = sum(odds_fora) / len(odds_fora)
-                    avg_e = sum(odds_empate) / len(odds_empate)
-                    margin = (1 / avg_c) + (1 / avg_f) + (1 / avg_e)
+            if odds_casa and odds_fora and odds_empate:
+                avg_c = sum(odds_casa) / len(odds_casa)
+                avg_f = sum(odds_fora) / len(odds_fora)
+                avg_e = sum(odds_empate) / len(odds_empate)
+                margin = (1 / avg_c) + (1 / avg_f) + (1 / avg_e)
 
-                    prob_c = (1 / avg_c) / margin
-                    prob_f = (1 / avg_f) / margin
-                    prob_e = (1 / avg_e) / margin
+                prob_c = (1 / avg_c) / margin
 
-                    # Guarda uma opção geral do jogo
-                    bk_principal = bookmakers[0]
-                    casa_nome_p = bk_principal.get("title", "Casa")
-                    odd_p = bk_principal["markets"][0]["outcomes"][0]["price"]
-                    
-                    jogos_gerais.append(
-                        f"⚽ *{home} vs {away}*\n"
-                        f"📅 *{hora_jogo} UTC*\n"
-                        f"🏠 Casa: *{casa_nome_p}*\n"
-                        f"📈 Odd ({home}): *{odd_p}*"
-                    )
+                # Apresenta a melhor odd disponível no mercado para a equipa da casa
+                bk_melhor = max(
+                    bookmakers,
+                    key=lambda x: next(
+                        (o["price"] for m in x["markets"] if m["key"] == "h2h" for o in m["outcomes"] if o["name"] == home),
+                        0,
+                    ),
+                )
+                casa_nome = bk_melhor.get("title", "Casa")
+                odd_melhor = next(
+                    (o["price"] for m in bk_melhor["markets"] if m["key"] == "h2h" for o in m["outcomes"] if o["name"] == home),
+                    avg_c,
+                )
 
-                    # Verifica oportunidades +EV
-                    for bk in bookmakers:
-                        casa_nome = bk.get("title", "Desconhecida")
-                        for mk in bk.get("markets", []):
-                            if mk.get("key") == "h2h":
-                                for out in mk.get("outcomes", []):
-                                    sel = out["name"]
-                                    odd = out["price"]
-                                    p = prob_c if sel == home else (prob_f if sel == away else prob_e)
-                                    ev = calcular_ev(p, odd)
+                ev = calcular_ev(prob_c, odd_melhor)
 
-                                    if ev > 0.1:  # Aceita qualquer valor positivo
-                                        msg = (
-                                            f"⚽ *{home} vs {away}*\n"
-                                            f"📅 *{hora_jogo} UTC*\n"
-                                            f"🎯 Escolha: *{sel}*\n"
-                                            f"🏠 Casa: *{casa_nome}*\n"
-                                            f"📈 Odd: *{odd}*\n"
-                                            f"💎 Valor Esperado (+EV): *+{ev}%*"
-                                        )
-                                        oportunidades.append((ev, msg))
+                # Mostra TODOS os jogos sem filtrar por EV mínimo
+                msg = (
+                    f"⚽ *{home} vs {away}*\n"
+                    f"📅 Hora: *{hora_jogo} UTC*\n"
+                    f"🎯 Palpite: *{home} (Vitória Casa)*\n"
+                    f"🏠 Melhor Casa: *{casa_nome}*\n"
+                    f"📈 Odd: *{odd_melhor}*\n"
+                    f"💎 Valor Calculado (+EV): *{'+' if ev > 0 else ''}{ev}%*"
+                )
+                lista_jogos.append((jogo_time, msg))
 
-        # Exibição de Resultados
-        if oportunidades:
-            oportunidades.sort(key=lambda x: x[0], reverse=True)
-            mensagens = [item[1] for item in oportunidades[:5]]
-            texto_final = "🔥 *Oportunidades +EV Encontradas:*\n\n" + "\n\n--------------------\n\n".join(mensagens)
-            await update.message.reply_text(texto_final, parse_mode="Markdown")
-        elif jogos_gerais:
-            texto_final = "📋 *Próximos Jogos Registados (Sem +EV alto de momento):*\n\n" + "\n\n--------------------\n\n".join(jogos_gerais[:3])
+        if lista_jogos:
+            # Ordena por hora do jogo (os mais próximos primeiro)
+            lista_jogos.sort(key=lambda x: x[0])
+            mensagens = [item[1] for item in lista_jogos[:8]]
+
+            texto_final = "🔥 *Próximos Jogos de Hoje / Amanhã:*\n\n" + "\n\n--------------------\n\n".join(mensagens)
             await update.message.reply_text(texto_final, parse_mode="Markdown")
         else:
-            await update.message.reply_text("⚠️ Nenhum jogo agendado para as próximas 48 horas nas ligas consultadas.")
+            await update.message.reply_text(
+                "⚠️ Nenhum jogo agendado para as próximas 24 horas."
+            )
 
     except Exception as e:
         logging.error(f"Erro ao analisar: {e}")
         await update.message.reply_text(f"❌ Erro de processamento: {e}")
 
+
+# --- INICIALIZAÇÃO ASSÍNCRONA ---
 async def main():
     if not TELEGRAM_TOKEN:
         return
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analisar", analisar))
+
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
     await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
     thread_flask = Thread(target=run_flask)
     thread_flask.daemon = True
     thread_flask.start()
+
     asyncio.run(main())
