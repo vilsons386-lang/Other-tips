@@ -111,10 +111,17 @@ async def analisar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💡 EV: {ev_casa*100:+.1f}%\n"
             f"📌 Status: {status_ev}\n"
         )
-        mensagens.append(msg)
-        
-    texto_final = "\n-------------------\n".join(mensagens) if mensagens else "Nenhum jogo analisado no momento."
-    await update.message.reply_text(texto_final, parse_mode="Markdown")
+            # Subtitua a partir da linha 114:
+    if mensagens:
+        texto_final = "\n--------------------\n".join(mensagens)
+        await update.message.reply_text(texto_final)
+    else:
+        await update.message.reply_text("⚠️ Nenhum jogo com valor esperado (+EV) encontrado no momento.")
+
+except Exception as e:
+    logging.error(f"Erro na análise: {e}")
+    await update.message.reply_text(f"❌ Ocorreu um erro na análise: {e}")
+
 
 async def main():
     """Inicia o bot."""
