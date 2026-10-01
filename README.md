@@ -1,0 +1,2 @@
+# Other-tips
+Bot tips
