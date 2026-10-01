@@ -124,16 +124,15 @@ async def main():
     app.add_handler(CommandHandler("analisar", analisar))
 
     print("Bot de Apostas +EV Ativo...")
-    
-    # Inicialização assíncrona para não bloquear o Flask/Render
+
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
+    # Mantém o evento ativo para o Render não fechar a aplicação
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
 
-
-if __name__ == "__main__":
-    main()
