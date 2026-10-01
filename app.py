@@ -22,7 +22,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return "Bot de Jogos do Dia está Online!"
+    return "Bot de Apostas +EV (Valores Positivos) está Online!"
 
 
 def run_flask():
@@ -39,13 +39,13 @@ def calcular_ev(probabilidade_fair, odd_oferecida):
 # --- COMANDOS DO TELEGRAM ---
 async def start(update: Update, context):
     await update.message.reply_text(
-        "👋 Olá! Envie /analisar para ver a lista dos próximos jogos (hoje e amanhã)."
+        "👋 Envie /analisar para buscar oportunidades com +EV Positivo nas próximas 30h."
     )
 
 
 async def analisar(update: Update, context):
     await update.message.reply_text(
-        "🔍 A procurar todos os jogos para as próximas 24-30 horas..."
+        "🔍 A procurar jogos com Valor Esperado Positivo (+EV > 0%)..."
     )
 
     try:
@@ -56,21 +56,22 @@ async def analisar(update: Update, context):
             return
 
         now_utc = datetime.now(timezone.utc)
-        # Limite de tempo reduzido para apanhar APENAS jogos de HOJE/AMANHÃ (máx 30h)
         limite_tempo = now_utc + timedelta(hours=30)
 
-        # Procura jogos nas ligas disponíveis
         url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
-        
-        # Se a rota genérica falhar, tenta ligas específicas
         res = requests.get(url, timeout=10)
         dados = []
 
         if res.status_code == 200:
             dados = res.json()
         else:
-            # Fallback para Premier League e Liga Portugal
-            for liga in ["soccer_epl", "soccer_portugal_primeira_liga", "soccer_spain_la_liga"]:
+            for liga in [
+                "soccer_epl",
+                "soccer_portugal_primeira_liga",
+                "soccer_spain_la_liga",
+                "soccer_germany_bundesliga",
+                "soccer_italy_serie_a",
+            ]:
                 u = f"https://api.the-odds-api.com/v4/sports/{liga}/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
                 r = requests.get(u, timeout=8)
                 if r.status_code == 200 and r.json():
@@ -80,7 +81,7 @@ async def analisar(update: Update, context):
             await update.message.reply_text("⚠️ Nenhum jogo encontrado no momento.")
             return
 
-        lista_jogos = []
+        oportunidades = []
 
         for jogo in dados:
             commence_time_str = jogo.get("commence_time")
@@ -88,7 +89,6 @@ async def analisar(update: Update, context):
                 jogo_time = datetime.fromisoformat(
                     commence_time_str.replace("Z", "+00:00")
                 )
-                # Filtra apenas o que acontece HOJE/AMANHÃ cedo
                 if jogo_time < now_utc or jogo_time > limite_tempo:
                     continue
             else:
@@ -123,44 +123,54 @@ async def analisar(update: Update, context):
                 margin = (1 / avg_c) + (1 / avg_f) + (1 / avg_e)
 
                 prob_c = (1 / avg_c) / margin
+                prob_f = (1 / avg_f) / margin
+                prob_e = (1 / avg_e) / margin
 
-                # Apresenta a melhor odd disponível no mercado para a equipa da casa
-                bk_melhor = max(
-                    bookmakers,
-                    key=lambda x: next(
-                        (o["price"] for m in x["markets"] if m["key"] == "h2h" for o in m["outcomes"] if o["name"] == home),
-                        0,
-                    ),
-                )
-                casa_nome = bk_melhor.get("title", "Casa")
-                odd_melhor = next(
-                    (o["price"] for m in bk_melhor["markets"] if m["key"] == "h2h" for o in m["outcomes"] if o["name"] == home),
-                    avg_c,
-                )
+                # Mapeamento de seleções e probabilidades
+                selecoes = [
+                    (home, prob_c, "Vitória Casa"),
+                    (away, prob_f, "Vitória Fora"),
+                    ("Draw", prob_e, "Empate"),
+                ]
 
-                ev = calcular_ev(prob_c, odd_melhor)
+                for nome_sel, prob_fair, rotulo in selecoes:
+                    # Encontra a melhor casa de apostas para essa seleção
+                    melhor_bk = None
+                    maior_odd = 0.0
 
-                # Mostra TODOS os jogos sem filtrar por EV mínimo
-                msg = (
-                    f"⚽ *{home} vs {away}*\n"
-                    f"📅 Hora: *{hora_jogo} UTC*\n"
-                    f"🎯 Palpite: *{home} (Vitória Casa)*\n"
-                    f"🏠 Melhor Casa: *{casa_nome}*\n"
-                    f"📈 Odd: *{odd_melhor}*\n"
-                    f"💎 Valor Calculado (+EV): *{'+' if ev > 0 else ''}{ev}%*"
-                )
-                lista_jogos.append((jogo_time, msg))
+                    for bk in bookmakers:
+                        for mk in bk.get("markets", []):
+                            if mk.get("key") == "h2h":
+                                for out in mk.get("outcomes", []):
+                                    if out["name"] == nome_sel and out["price"] > maior_odd:
+                                        maior_odd = out["price"]
+                                        melhor_bk = bk.get("title", "Desconhecida")
 
-        if lista_jogos:
-            # Ordena por hora do jogo (os mais próximos primeiro)
-            lista_jogos.sort(key=lambda x: x[0])
-            mensagens = [item[1] for item in lista_jogos[:8]]
+                    if maior_odd > 0 and melhor_bk:
+                        ev = calcular_ev(prob_fair, maior_odd)
 
-            texto_final = "🔥 *Próximos Jogos de Hoje / Amanhã:*\n\n" + "\n\n--------------------\n\n".join(mensagens)
+                        # Apenas aceita se o EV for rigorosamente positivo
+                        if ev > 0.0:
+                            msg = (
+                                f"⚽ *{home} vs {away}*\n"
+                                f"📅 Hora: *{hora_jogo} UTC*\n"
+                                f"🎯 Palpite: *{nome_sel} ({rotulo})*\n"
+                                f"🏠 Melhor Casa: *{melhor_bk}*\n"
+                                f"📈 Odd: *{maior_odd}*\n"
+                                f"💎 Valor Esperado (+EV): *+{ev}%*"
+                            )
+                            oportunidades.append((ev, jogo_time, msg))
+
+        if oportunidades:
+            # Ordena primeiro pelo maior +EV
+            oportunidades.sort(key=lambda x: x[0], reverse=True)
+            mensagens = [item[2] for item in oportunidades[:8]]
+
+            texto_final = "🔥 *Oportunidades com +EV Positivo:*\n\n" + "\n\n--------------------\n\n".join(mensagens)
             await update.message.reply_text(texto_final, parse_mode="Markdown")
         else:
             await update.message.reply_text(
-                "⚠️ Nenhum jogo agendado para as próximas 24 horas."
+                "⚠️ Nenhuma oportunidade com +EV positivo encontrada para as próximas 30 horas."
             )
 
     except Exception as e:
