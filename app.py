@@ -1,13 +1,32 @@
 import logging
-import requests
+import os
+from threading import Thread
+from flask import Flask
 import numpy as np
 from scipy.stats import poisson
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder
 
-# --- CONFIGURAÇÃO DE CHAVES ---
-TELEGRAM_TOKEN = "8678824908:AAHcdYYWPKUXJWEI5PS9lwKzM0g6hzPN2fw"
-ODDS_API_KEY = "Df1843e55bbf8d7d94df2fa3e4e8f179"
+# --- SERVIDOR FLASK PARA O RENDER ---
+flask_app = Flask(__name__)
+
+
+@flask_app.route("/")
+def home():
+    return "Bot Mytips ativo e a rodar!", 200
+
+
+def run_http():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+
+Thread(target=run_http, daemon=True).start()
+
+# --- CONFIGURAÇÃO DE CHAVES (VARIÁVEIS DE AMBIENTE) ---
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
+
 
 # Configuração de Logs
 logging.basicConfig(
