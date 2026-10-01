@@ -3,93 +3,106 @@ import requests
 import numpy as np
 from scipy.stats import poisson
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- INSERE AS TUAS CHAVES AQUI ---
-TELEGRAM_TOKEN = "TEU_TOKEN_DO_BOTFATHER"
-ODDS_API_KEY = "TUA_KEY_DA_THE_ODDS_API"  # A chave df1843e55bbf8c... da imagem
+# --- CONFIGURAÇÃO DE CHAVES ---
+TELEGRAM_TOKEN = "8678824908:AAHcdYYWPKUXJWEI5PS9lwKzM0g6hzPN2fw"
+ODDS_API_KEY = "Df1843e55bbf8d7d94df2fa3e4e8f179"
 
-logging.basicConfig(level=logging.INFO)
+# Configuração de Logs
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-def calcular_poisson(gp_casa=1.6, gc_casa=0.9, gp_vis=1.2, gc_vis=1.4):
-    l_casa = (gp_casa / 1.4) * (gc_vis / 1.4) * 1.4
-    l_vis = (gp_vis / 1.1) * (gc_casa / 1.1) * 1.1
+def calcular_poisson(gp_casa=1.6, gc_casa=1.0, gp_fora=1.2, gc_fora=1.4):
+    """Calcula probabilidades estimadas usando distribuição de Poisson."""
+    lambda_casa = (gp_casa + gc_fora) / 2
+    lambda_fora = (gp_fora + gc_casa) / 2
     
-    matriz = np.zeros((6, 6))
-    for i in range(6):
-        for j in range(6):
-            matriz[i, j] = poisson.pmf(i, l_casa) * poisson.pmf(j, l_vis)
-            
-    p_casa = float(np.sum(np.tril(matriz, -1)))
-    p_empate = float(np.sum(np.diag(matriz)))
-    p_vis = float(np.sum(np.triu(matriz, 1)))
+    prob_casa = 0.0
+    prob_empate = 0.0
+    prob_fora = 0.0
     
-    return {'h2h_home': p_casa, 'h2h_draw': p_empate, 'h2h_away': p_vis}
+    for x in range(6):
+        for y in range(6):
+            p = poisson.pmf(x, lambda_casa) * poisson.pmf(y, lambda_fora)
+            if x > y:
+                prob_casa += p
+            elif x == y:
+                prob_empate += p
+            else:
+                prob_fora += p
+                
+    return prob_casa, prob_empate, prob_fora
+
+def obter_odds_apostas():
+    """Obtém odds de futebol em tempo real da The Odds API."""
+    url = f"https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()
+    return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /start para boas-vindas."""
     await update.message.reply_text(
-        "🤖 *Bot de Apostas +EV Ativo!*\n\n"
-        "Comandos disponíveis:\n"
-        "• `/analisar` - Procura odds de valor em tempo real.",
-        parse_mode="Markdown"
+        "👋 Bem-vindo ao Bot de Apostas +EV!\n\n"
+        "Usa o comando /analisar para obter palpites com valor esperado positivo em tempo real."
     )
 
 async def analisar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 A procurar jogos e odds de valor...")
+    """Comando /analisar para identificar apostas +EV."""
+    await update.message.reply_text("🔍 A procurar jogos e a calcular valor esperado (+EV)...")
     
-    url = 'https://api.the-odds-api.com/v4/sports/soccer_epl/odds/'
-    params = {
-        'apiKey': ODDS_API_KEY,
-        'regions': 'eu',
-        'markets': 'h2h'
-    }
+    jogos = obter_odds_apostas()
+    if not jogos:
+        await update.message.reply_text("❌ Não foi possível obter odds no momento ou limite da API atingido.")
+        return
+        
+    p_casa, p_empate, p_fora = calcular_poisson()
+    mensagens = []
     
-    try:
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            await update.message.reply_text("❌ Erro ao ligar à API de Odds.")
-            return
+    for jogo in jogos[:3]:
+        home_team = jogo.get("home_team", "Casa")
+        away_team = jogo.get("away_team", "Fora")
+        
+        bookmakers = jogo.get("bookmakers", [])
+        if not bookmakers:
+            continue
             
-        jogos = response.json()
-        probs_modelo = calcular_poisson()
-        alertas = 0
-
-        for jogo in jogos[:3]:
-            home = jogo['home_team']
-            away = jogo['away_team']
+        markets = bookmakers[0].get("markets", [])
+        if not markets:
+            continue
             
-            for bookmaker in jogo.get('bookmakers', []):
-                casa = bookmaker['title']
-                for market in bookmaker.get('markets', []):
-                    if market['key'] == 'h2h':
-                        for outcome in market['outcomes']:
-                            selecao = outcome['name']
-                            odd_casa = outcome['price']
-                            
-                            prob = probs_modelo['h2h_home'] if selecao == home else (probs_modelo['h2h_away'] if selecao == away else probs_modelo['h2h_draw'])
-                            odd_justa = 1 / prob if prob > 0 else 0
-                            ev = (prob * odd_casa) - 1
-                            
-                            if ev >= 0.05:
-                                alertas += 1
-                                msg = (
-                                    f"🚨 *APOSTA DE VALOR (+EV)* 🚨\n\n"
-                                    f"⚽ *Jogo:* {home} vs {away}\n"
-                                    f"🎯 *Aposta:* {selecao}\n"
-                                    f"🏦 *Casa:* {casa}\n"
-                                    f"📈 *Odd da Casa:* `{odd_casa}`\n"
-                                    f"📐 *Odd Justa:* `{odd_justa:.2f}`\n"
-                                    f"💰 *+EV:* `+{ev*100:.1f}%`"
-                                )
-                                await update.message.reply_text(msg, parse_mode="Markdown")
-                                
-        if alertas == 0:
-            await update.message.reply_text("ℹ️ Nenhuma aposta +EV encontrada no momento.")
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Erro ao processar: {e}")
+        outcomes = markets[0].get("outcomes", [])
+        odd_casa = next((o["price"] for o in outcomes if o["name"] == home_team), 0)
+        
+        ev_casa = (p_casa * odd_casa) - 1
+        
+        status_ev = "🔥 +EV Encontrado!" if ev_casa > 0 else "⚪ Sem Valor"
+        
+        msg = (
+            f"⚽ *{home_team} vs {away_team}*\n"
+            f"📊 Prob. Estimada Casa: {p_casa*100:.1f}%\n"
+            f"📈 Odd Mercado: {odd_casa}\n"
+            f"💡 EV: {ev_casa*100:+.1f}%\n"
+            f"📌 Status: {status_ev}\n"
+        )
+        mensagens.append(msg)
+        
+    texto_final = "\n-------------------\n".join(mensagens) if mensagens else "Nenhum jogo analisado no momento."
+    await update.message.reply_text(texto_final, parse_mode="Markdown")
 
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+def main():
+    """Inicia o bot."""
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analisar", analisar))
+    
+    print("Bot de Apostas +EV Ativo!")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
