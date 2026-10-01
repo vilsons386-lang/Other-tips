@@ -1,130 +1,107 @@
-import loggingr
+import asyncio
+import logging
 import os
 from threading import Thread
+import requests
 from flask import Flask
-import numpy as np
-from scipy.stats import poisson
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler
 
+# Configuração de logs
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-
-# --- SERVIDOR FLASK PARA O RENDER ---
+# Servidor Flask para manter o Render ativo
 flask_app = Flask(__name__)
 
 
 @flask_app.route("/")
 def home():
-    return "Bot Mytips ativo e a rodar!", 200
+    return "Bot de Apostas +EV está Online!"
 
 
-def run_http():
+def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
 
-Thread(target=run_http, daemon=True).start()
-
-# --- CONFIGURAÇÃO DE CHAVES (VARIÁVEIS DE AMBIENTE) ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-
-
-# Configuração de Logs
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-def calcular_poisson(gp_casa=1.6, gc_casa=1.0, gp_fora=1.2, gc_fora=1.4):
-    """Calcula probabilidades estimadas usando distribuição de Poisson."""
-    lambda_casa = (gp_casa + gc_fora) / 2
-    lambda_fora = (gp_fora + gc_casa) / 2
-    
-    prob_casa = 0.0
-    prob_empate = 0.0
-    prob_fora = 0.0
-    
-    for x in range(6):
-        for y in range(6):
-            p = poisson.pmf(x, lambda_casa) * poisson.pmf(y, lambda_fora)
-            if x > y:
-                prob_casa += p
-            elif x == y:
-                prob_empate += p
-            else:
-                prob_fora += p
-                
-    return prob_casa, prob_empate, prob_fora
-
-def obter_odds_apostas():
-    """Obtém odds de futebol em tempo real da The Odds API."""
-    url = f"https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()
-    return []
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /start para boas-vindas."""
+# --- COMANDOS DO TELEGRAM ---
+async def start(update: Update, context):
     await update.message.reply_text(
-        "👋 Bem-vindo ao Bot de Apostas +EV!\n\n"
-        "Usa o comando /analisar para obter palpites com valor esperado positivo em tempo real."
+        "Olá! Envie /analisar para procurar apostas com valor esperado (+EV)."
     )
 
-async def analisar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /analisar para identificar apostas +EV."""
-    await update.message.reply_text("🔍 A procurar jogos e a calcular valor esperado (+EV)...")
-    
-    jogos = obter_odds_apostas()
-    if not jogos:
-        await update.message.reply_text("❌ Não foi possível obter odds no momento ou limite da API atingido.")
-        return
-        
-    p_casa, p_empate, p_fora = calcular_poisson()
-    mensagens = []
-    
-    for jogo in jogos[:3]:
-        home_team = jogo.get("home_team", "Casa")
-        away_team = jogo.get("away_team", "Fora")
-        
-        bookmakers = jogo.get("bookmakers", [])
-        if not bookmakers:
-            continue
-            
-        markets = bookmakers[0].get("markets", [])
-        if not markets:
-            continue
-            
-        outcomes = markets[0].get("outcomes", [])
-        odd_casa = next((o["price"] for o in outcomes if o["name"] == home_team), 0)
-        
-        ev_casa = (p_casa * odd_casa) - 1
-        
-        status_ev = "🔥 +EV Encontrado!" if ev_casa > 0 else "⚪ Sem Valor"
-        
-        msg = (
-            f"⚽ *{home_team} vs {away_team}*\n"
-            f"📊 Prob. Estimada Casa: {p_casa*100:.1f}%\n"
-            f"📈 Odd Mercado: {odd_casa}\n"
-            f"💡 EV: {ev_casa*100:+.1f}%\n"
-            f"📌 Status: {status_ev}\n"
-        )
-            # Subtitua a partir da linha 114:
-    if mensagens:
-        texto_final = "\n--------------------\n".join(mensagens)
-        await update.message.reply_text(texto_final)
-    else:
-        await update.message.reply_text("⚠️ Nenhum jogo com valor esperado (+EV) encontrado no momento.")
 
-except Exception as e:
-    logging.error(f"Erro na análise: {e}")
-    await update.message.reply_text(f"❌ Ocorreu um erro na análise: {e}")
+async def analisar(update: Update, context):
+    await update.message.reply_text(
+        "🔍 A procurar jogos e a calcular valor esperado (+EV)..."
+    )
+
+    try:
+        if not ODDS_API_KEY:
+            await update.message.reply_text(
+                "❌ Erro: ODDS_API_KEY não configurada no Render."
+            )
+            return
+
+        # Fazer requisição à Odds API (exemplo: Premier League)
+        url = f"https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey={ODDS_API_KEY}&regions=eu&markets=h2h"
+        response = requests.get(url, timeout=15)
+
+        if response.status_code != 200:
+            await update.message.reply_text(
+                f"❌ Erro na Odds API ({response.status_code}): {response.text}"
+            )
+            return
+
+        dados = response.json()
+        if not dados:
+            await update.message.reply_text(
+                "⚠️ Nenhum jogo encontrado no momento."
+            )
+            return
+
+        mensagens = []
+        for jogo in dados[:5]:  # Analisa os primeiros 5 jogos
+            home_team = jogo.get("home_team", "Casa")
+            away_team = jogo.get("away_team", "Fora")
+            bookmakers = jogo.get("bookmakers", [])
+
+            if bookmakers:
+                markets = bookmakers[0].get("markets", [])
+                if markets:
+                    outcomes = markets[0].get("outcomes", [])
+                    if outcomes:
+                        odd_casa = outcomes[0].get("price", 1.0)
+                        msg = f"⚽ *{home_team} vs {away_team}*\n📈 Odd Casa: {odd_casa}"
+                        mensagens.append(msg)
+
+        if mensagens:
+            texto_final = "\n\n--------------------\n\n".join(mensagens)
+            await update.message.reply_text(
+                texto_final, parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ Nenhum jogo com valor (+EV) encontrado."
+            )
+
+    except Exception as e:
+        logging.error(f"Erro no comando analisar: {e}")
+        await update.message.reply_text(f"❌ Erro interno no código: {e}")
 
 
+# --- INICIALIZAÇÃO ASSÍNCRONA ---
 async def main():
-    """Inicia o bot."""
+    if not TELEGRAM_TOKEN:
+        print("ERRO CRÍTICO: TELEGRAM_TOKEN não configurado!")
+        return
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -136,10 +113,17 @@ async def main():
     await app.start()
     await app.updater.start_polling()
 
-    # Mantém o evento ativo para o Render não fechar a aplicação
+    # Mantém o evento ativo para o Render não fechar
     await asyncio.Event().wait()
 
+
 if __name__ == "__main__":
-    import asyncio
+    # 1. Inicia o Flask numa thread secundária
+    thread_flask = Thread(target=run_flask)
+    thread_flask.daemon = True
+    thread_flask.start()
+
+    # 2. Inicia o Bot na thread principal com asyncio
     asyncio.run(main())
+
 
