@@ -116,15 +116,24 @@ async def analisar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto_final = "\n-------------------\n".join(mensagens) if mensagens else "Nenhum jogo analisado no momento."
     await update.message.reply_text(texto_final, parse_mode="Markdown")
 
-def main():
+async def main():
     """Inicia o bot."""
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analisar", analisar))
+
+    print("Bot de Apostas +EV Ativo...")
     
-    print("Bot de Apostas +EV Ativo!")
-    app.run_polling()
+    # Inicialização assíncrona para não bloquear o Flask/Render
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+
 
 if __name__ == "__main__":
     main()
